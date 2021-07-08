@@ -472,6 +472,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "byteorder"
+version = "1.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "14c189c53d098945499cdfa7ecc63567cf3886b3332b312a5b4585d8d3a6a610"
+
+[[package]]
 name = "bytes"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -488,6 +494,16 @@ name = "cc"
 version = "1.0.68"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4a72c244c1ff497a746a7e1fb3d14bd08420ecda70c8f25c7112f2781652d787"
+
+[[package]]
+name = "cdr"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9617422bf43fde9280707a7e90f8f7494389c182f5c70b0f67592d0f06d41dfa"
+dependencies = [
+ "byteorder",
+ "serde",
+]
 
 [[package]]
 name = "cexpr"
@@ -2811,6 +2827,7 @@ version = "0.5.0-beta.2"
 dependencies = [
  "async-std",
  "async-trait",
+ "cdr",
  "clap",
  "cyclors",
  "env_logger",
@@ -2821,6 +2838,7 @@ dependencies = [
  "log",
  "regex",
  "serde",
+ "serde_derive",
  "serde_json",
  "zenoh",
  "zenoh-ext",
