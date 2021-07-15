@@ -19,8 +19,10 @@ fn customize_dds_args<'a, 'b>(mut args: Vec<Arg<'a, 'b>>) -> Vec<Arg<'a, 'b>> {
     // NOTE: no way to check what's each Arg is in the Vec!
     // We need to assume that there are 7, and that they are in correct order...
     // as specifed in src/lib.rs in get_expected_args()
-    assert_eq!(7, args.len());
+    assert_eq!(9, args.len());
     let arg = args.remove(0).short("s").visible_alias("scope");
+    args.push(arg);
+    let arg = args.remove(0).visible_alias("sub-scope");
     args.push(arg);
     let arg = args.remove(0).short("w").visible_alias("generalise-pub");
     args.push(arg);
@@ -33,6 +35,8 @@ fn customize_dds_args<'a, 'b>(mut args: Vec<Arg<'a, 'b>>) -> Vec<Arg<'a, 'b>> {
     let arg = args.remove(0).visible_alias("group-member-id");
     args.push(arg);
     let arg = args.remove(0).visible_alias("group-lease");
+    args.push(arg);
+    let arg = args.remove(0).visible_alias("deadline");
     args.push(arg);
 
     args

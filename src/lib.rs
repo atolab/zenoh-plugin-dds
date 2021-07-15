@@ -61,8 +61,11 @@ const PUB_CACHE_QUERY_PREFIX: &str = "/zenoh_dds_plugin/pub_cache";
 pub fn get_expected_args2<'a, 'b>() -> Vec<Arg<'a, 'b>> {
     vec![
         Arg::from_usage(
-            "--dds-scope=[String]   'A string used as prefix to scope DDS traffic.'"
+            "--dds-scope=[String]   'A string used as prefix in zenoh resource keys (for both publications and subscriptions) to scope DDS traffic.'"
         ).default_value(""),
+        Arg::from_usage(
+            "--dds-sub-scope=[String]   'A string used as prefix in zenoh subscriptions resource keys to scope DDS traffic (default: same as value as --dds-scope).'"
+        ),
         Arg::from_usage(
             "--dds-generalise-pub=[String]...   'A list of key expression to use for generalising publications (usable multiple times).'"
         ),
@@ -83,6 +86,9 @@ pub fn get_expected_args2<'a, 'b>() -> Vec<Arg<'a, 'b>> {
         Arg::from_usage(
             "--dds-group-lease=[Duration]   'The lease duration (in seconds) used in group management for all DDS plugins.'"
         ).default_value(GROUP_DEFAULT_LEASE),
+        Arg::from_usage(
+            "--dds-deadline=[topic_regex=duration]... 'A topic with its deadline duration, meaning that if a data is not received in the `duration` interval, a QosEvent() is published on `qos_event`topic."
+        ),
     ]
 }
 
@@ -97,7 +103,11 @@ pub async fn run(runtime: Runtime, args: ArgMatches<'_>) {
     // But cannot be done twice in case of static link.
     let _ = env_logger::try_init();
 
-    let scope = args.value_of("dds-scope").unwrap().to_string();
+    let pub_scope = args.value_of("dds-scope").unwrap().to_string();
+    let sub_scope = args
+        .value_of("dds-sub-scope")
+        .map(String::from)
+        .unwrap_or(pub_scope.clone());
 
     let domain_id_str = args.value_of("dds-domain").unwrap();
     let domain_id = match domain_id_str.parse::<u32>() {
@@ -136,6 +146,23 @@ pub async fn run(runtime: Runtime, args: ArgMatches<'_>) {
         .map(|s| s.to_string())
         .collect::<Vec<String>>();
 
+    let deadlined_topics: Vec<(Regex, Duration)> = args
+        .values_of("dds-deadline")
+        .unwrap_or_default()
+        .map(|s| {
+            if let Some(i) = s.find('=') {
+                match (Regex::new(&s[..i]), s[i + 1..].parse::<u64>()) {
+                    (Ok(topic_regex), Ok(deadline)) => {
+                        (topic_regex, Duration::from_millis(deadline))
+                    }
+                    _ => panic!("Invalid --dds-deadline argument: {}", s),
+                }
+            } else {
+                panic!("Invalid --dds-deadline argument: {}", s);
+            }
+        })
+        .collect();
+
     // open zenoh-net Session
     let zsession =
         Arc::new(Session::init(runtime, true, join_subscriptions, join_publications).await);
@@ -149,9 +176,12 @@ pub async fn run(runtime: Runtime, args: ArgMatches<'_>) {
     let dp = unsafe { dds_create_participant(domain_id, std::ptr::null(), std::ptr::null()) };
 
     let dds_plugin = DdsPlugin {
-        scope,
+        pub_scope,
+        sub_scope,
         domain_id,
         allow_re,
+        deadlined_topics,
+        deadlines_supervisor: far_ext::DeadlinesSupervisor::new(&zsession),
         zsession: &zsession,
         member,
         dp,
@@ -211,9 +241,12 @@ struct ToDDSRoute<'a> {
 }
 
 struct DdsPlugin<'a> {
-    scope: String,
+    pub_scope: String,
+    sub_scope: String,
     domain_id: u32,
     allow_re: Option<Regex>,
+    deadlined_topics: Vec<(Regex, Duration)>,
+    deadlines_supervisor: far_ext::DeadlinesSupervisor<'a>,
     // Note: &'a Arc<Session> here to keep the ownership of Session outside this struct
     // and be able to store the publishers/subscribers it creates in this same struct.
     zsession: &'a Arc<Session>,
@@ -238,7 +271,8 @@ impl Serialize for DdsPlugin<'_> {
         // return the plugin's config as a JSON struct
         let mut s = serializer.serialize_struct("dds", 3)?;
         s.serialize_field("domain_id", &self.domain_id)?;
-        s.serialize_field("scope", &self.scope)?;
+        s.serialize_field("pub_scope", &self.pub_scope)?;
+        s.serialize_field("sub_scope", &self.sub_scope)?;
         s.serialize_field(
             "allow",
             &self
@@ -504,6 +538,17 @@ impl<'a> DdsPlugin<'a> {
                 (ZSubscriber::Subscriber(sub), Box::pin(receiver))
             };
 
+        // check if the topic is configured with a deadline
+        for (regex, deadline) in &self.deadlined_topics {
+            if regex.is_match(&sub_to_match.topic_name) {
+                self.deadlines_supervisor
+                    .supervise(&zkey, deadline.clone())
+                    .await;
+                break;
+            }
+        }
+
+        // stuff to be moved into tasks below
         let ton = sub_to_match.topic_name.clone();
         let tyn = sub_to_match.type_name.clone();
         let keyless = sub_to_match.keyless;
@@ -670,8 +715,11 @@ impl<'a> DdsPlugin<'a> {
 
         // declare FAR writer on qos_event
         let qos_event_dw = far_ext::create_qos_event_writer(self.dp);
+        // start DeadlinesSupervisor loop
+        self.deadlines_supervisor.run(self.dp, qos_event_dw);
 
-        let scope = self.scope.clone();
+        let pub_scope = self.pub_scope.clone();
+        let sub_scope = self.sub_scope.clone();
         loop {
             select!(
                 evt = rx.recv().fuse() => {
@@ -680,12 +728,12 @@ impl<'a> DdsPlugin<'a> {
                             mut entity
                         } => {
                             if entity.partitions.is_empty() {
-                                let zkey = format!("{}/{}", scope, entity.topic_name);
+                                let zkey = format!("{}/{}", pub_scope, entity.topic_name);
                                 let route_status = self.try_add_route_from_dds(zkey, &entity).await;
                                 entity.routes.insert("*".to_string(), route_status);
                             } else {
                                 for p in &entity.partitions {
-                                    let zkey = format!("{}/{}/{}", scope, p, entity.topic_name);
+                                    let zkey = format!("{}/{}/{}", pub_scope, p, entity.topic_name);
                                     let route_status = self.try_add_route_from_dds(zkey, &entity).await;
                                     entity.routes.insert(p.clone(), route_status);
                                 }
@@ -701,12 +749,12 @@ impl<'a> DdsPlugin<'a> {
                             mut entity
                         } => {
                             if entity.partitions.is_empty() {
-                                let zkey = format!("{}/{}", scope, entity.topic_name);
+                                let zkey = format!("{}/{}", sub_scope, entity.topic_name);
                                 let route_status = self.try_add_route_to_dds(zkey, &entity).await;
                                 entity.routes.insert("*".to_string(), route_status);
                             } else {
                                 for p in &entity.partitions {
-                                    let zkey = format!("{}/{}/{}", scope, p, entity.topic_name);
+                                    let zkey = format!("{}/{}/{}", sub_scope, p, entity.topic_name);
                                     let route_status = self.try_add_route_to_dds(zkey, &entity).await;
                                     entity.routes.insert(p.clone(), route_status);
                                 }
@@ -746,6 +794,8 @@ impl<'a> DdsPlugin<'a> {
                         GroupEvent::Leave(LeaveEvent{mid}) | GroupEvent::LeaseExpired(LeaseExpiredEvent{mid}) => {
                             // publish on qos_event
                             far_ext::publish_qos_event(self.dp, qos_event_dw, "*", &mid, far_ext::QOS_EVENT_NOT_ALIVE);
+                            // cancel all deadlines supervision for this robot
+                            self.deadlines_supervisor.cancel_all_deadline(&mid);
                         }
                         _ => {}
                     }

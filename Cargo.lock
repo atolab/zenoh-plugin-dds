@@ -2843,4 +2843,5 @@ dependencies = [
  "zenoh",
  "zenoh-ext",
  "zenoh-plugin-rest",
+ "zenoh-util",
 ]
