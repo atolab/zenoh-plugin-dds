@@ -163,9 +163,9 @@ pub async fn run(runtime: Runtime, args: ArgMatches<'_>) {
         })
         .collect();
 
-    // open zenoh-net Session
+    // open zenoh-net Session (with local routing disabled to avoid loops)
     let zsession =
-        Arc::new(Session::init(runtime, true, join_subscriptions, join_publications).await);
+        Arc::new(Session::init(runtime, false, join_subscriptions, join_publications).await);
 
     // create group member
     let zid = zsession.id().await;
@@ -278,7 +278,7 @@ impl Serialize for DdsPlugin<'_> {
             &self
                 .allow_re
                 .as_ref()
-                .map_or_else(|| "**".to_string(), |re| re.to_string()),
+                .map_or_else(|| ".*".to_string(), |re| re.to_string()),
         )?;
         s.end()
     }
