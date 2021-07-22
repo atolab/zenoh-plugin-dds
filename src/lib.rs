@@ -17,6 +17,7 @@ use clap::{Arg, ArgMatches};
 use cyclors::*;
 use futures::prelude::*;
 use futures::select;
+use git_version::git_version;
 use log::{debug, info, warn};
 use regex::Regex;
 use serde::ser::SerializeStruct;
@@ -42,6 +43,12 @@ use qos::*;
 mod dds_mgt;
 use dds_mgt::*;
 mod far_ext;
+
+pub const GIT_VERSION: &str = git_version!(prefix = "v", cargo_prefix = "v");
+
+lazy_static::lazy_static!(
+    pub static ref LONG_VERSION: String = format!("{} built with {}", GIT_VERSION, env!("RUSTC_VERSION"));
+);
 
 const GROUP_NAME: &str = "zenoh-plugin-dds";
 const GROUP_DEFAULT_LEASE: &str = "3";
@@ -102,6 +109,7 @@ pub async fn run(runtime: Runtime, args: ArgMatches<'_>) {
     // Required in case of dynamic lib, otherwise no logs.
     // But cannot be done twice in case of static link.
     let _ = env_logger::try_init();
+    debug!("DDS plugin {}", LONG_VERSION.as_str());
 
     let pub_scope = args.value_of("dds-scope").unwrap().to_string();
     let sub_scope = args
@@ -195,13 +203,14 @@ pub async fn run(runtime: Runtime, args: ArgMatches<'_>) {
     dds_plugin.run().await;
 }
 
-// An reference used in admin space to point to a struct (DdsEntiry or Route) stored in another map
+// An reference used in admin space to point to a struct (DdsEntity or Route) stored in another map
 enum AdminRef {
     DdsWriterEntity(String),
     DdsReaderEntity(String),
     FromDdsRoute(String),
     ToDdsRoute(String),
     Config,
+    Version,
 }
 
 enum ZPublisher<'a> {
@@ -614,6 +623,7 @@ impl<'a> DdsPlugin<'a> {
                 .get(zkey)
                 .map(|e| Value::Json(serde_json::to_string(e).unwrap())),
             AdminRef::Config => Some(Value::Json(serde_json::to_string(self).unwrap())),
+            AdminRef::Version => Some(Value::Json(format!(r#""{}""#, LONG_VERSION.as_str()))),
         }
     }
 
@@ -709,9 +719,11 @@ impl<'a> DdsPlugin<'a> {
             .await
             .unwrap();
 
-        // add plugin's config in admin space
+        // add plugin's config and version in admin space
         self.admin_space
             .insert("config".to_string(), AdminRef::Config);
+        self.admin_space
+            .insert("version".to_string(), AdminRef::Version);
 
         // declare FAR writer on qos_event
         let qos_event_dw = far_ext::create_qos_event_writer(self.dp);
