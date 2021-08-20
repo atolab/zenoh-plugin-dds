@@ -37,6 +37,7 @@ use zenoh_ext::net::group::{Group, GroupEvent, JoinEvent, LeaseExpiredEvent, Lea
 use zenoh_ext::net::{
     PublicationCache, QueryingSubscriber, SessionExt, PUBLICATION_CACHE_QUERYABLE_KIND,
 };
+use zenoh_plugin_trait::{prelude::*, PluginId};
 
 mod qos;
 use qos::*;
@@ -57,15 +58,37 @@ lazy_static::lazy_static!(
 );
 const PUB_CACHE_QUERY_PREFIX: &str = "/zenoh_dds_plugin/pub_cache";
 
-// #[no_mangle]
-// pub fn get_expected_args<'a, 'b>() -> Vec<Arg<'a, 'b>> {
-//     get_expected_args2()
-// }
+pub struct DDSPlugin;
+
+impl Plugin for DDSPlugin {
+    type Requirements = Vec<Arg<'static, 'static>>;
+
+    type StartArgs = (Runtime, ArgMatches<'static>);
+
+    fn compatibility() -> zenoh_plugin_trait::PluginId {
+        PluginId {
+            uid: "zenoh-dds-plugin",
+        }
+    }
+
+    fn get_requirements() -> Self::Requirements {
+        get_expected_args()
+    }
+
+    fn start(
+        (runtime, args): &Self::StartArgs,
+    ) -> Result<Box<dyn std::any::Any + Send + Sync>, Box<dyn std::error::Error>> {
+        async_std::task::spawn(run(runtime.clone(), args.to_owned()));
+        Ok(Box::new(()))
+    }
+}
+
+zenoh_plugin_trait::declare_plugin!(DDSPlugin);
 
 // NOTE: temporary hack for static link of DDS plugin in zenoh-bridge-dds, thus it can call this function
 // instead of relying on #[no_mangle] functions that will conflicts with those defined in REST plugin.
 // TODO: remove once eclipse-zenoh/zenoh#89 is implemented
-pub fn get_expected_args2<'a, 'b>() -> Vec<Arg<'a, 'b>> {
+pub fn get_expected_args<'a, 'b>() -> Vec<Arg<'a, 'b>> {
     vec![
         Arg::from_usage(
             "--dds-scope=[String]   'A string used as prefix in zenoh resource keys (for both publications and subscriptions) to scope DDS traffic.'"
@@ -98,11 +121,6 @@ pub fn get_expected_args2<'a, 'b>() -> Vec<Arg<'a, 'b>> {
         ),
     ]
 }
-
-// #[no_mangle]
-// pub fn start(runtime: Runtime, args: &'static ArgMatches<'_>) {
-//     async_std::task::spawn(run(runtime, args.clone()));
-// }
 
 pub async fn run(runtime: Runtime, args: ArgMatches<'_>) {
     // Try to initiate login.
@@ -533,7 +551,7 @@ impl<'a> DdsPlugin<'a> {
                     .zsession
                     .declare_querying_subscriber(&rkey)
                     .query_reskey(format!("{}/*{}", PUB_CACHE_QUERY_PREFIX, zkey).into())
-                    .await
+                    .wait()
                     .unwrap();
                 let receiver = sub.receiver().clone();
                 (ZSubscriber::QueryingSubscriber(sub), Box::pin(receiver))
@@ -541,7 +559,7 @@ impl<'a> DdsPlugin<'a> {
                 let mut sub = self
                     .zsession
                     .declare_subscriber(&rkey, &sub_info)
-                    .await
+                    .wait()
                     .unwrap();
                 let receiver = sub.receiver().clone();
                 (ZSubscriber::Subscriber(sub), Box::pin(receiver))
@@ -551,8 +569,7 @@ impl<'a> DdsPlugin<'a> {
         for (regex, deadline) in &self.deadlined_topics {
             if regex.is_match(&sub_to_match.topic_name) {
                 self.deadlines_supervisor
-                    .supervise(&zkey, deadline.clone())
-                    .await;
+                    .supervise(&zkey, deadline.clone());
                 break;
             }
         }

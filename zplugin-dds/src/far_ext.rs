@@ -21,6 +21,7 @@ use std::sync::Arc;
 use std::sync::RwLock;
 use std::time::Instant;
 use std::{ffi::CString, time::Duration};
+use zenoh::ZFuture;
 use zenoh::net::CallbackSubscriber;
 use zenoh::net::Reliability;
 use zenoh::net::Session;
@@ -162,7 +163,7 @@ impl DeadlinesSupervisor<'_> {
         });
     }
 
-    pub(crate) async fn supervise(&mut self, zkey: &str, deadline: Duration) {
+    pub(crate) fn supervise(&mut self, zkey: &str, deadline: Duration) {
         let sub_info = SubInfo {
             reliability: Reliability::Reliable,
             mode: SubMode::Push,
@@ -182,7 +183,7 @@ impl DeadlinesSupervisor<'_> {
                     deadline,
                 );
             })
-            .await
+            .wait()
             .unwrap();
 
         self.subscribers.insert(zkey.into(), sub);
