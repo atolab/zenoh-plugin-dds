@@ -568,8 +568,7 @@ impl<'a> DdsPlugin<'a> {
         // check if the topic is configured with a deadline
         for (regex, deadline) in &self.deadlined_topics {
             if regex.is_match(&sub_to_match.topic_name) {
-                self.deadlines_supervisor
-                    .supervise(&zkey, deadline.clone());
+                self.deadlines_supervisor.supervise(&zkey, deadline.clone());
                 break;
             }
         }

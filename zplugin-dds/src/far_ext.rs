@@ -21,12 +21,12 @@ use std::sync::Arc;
 use std::sync::RwLock;
 use std::time::Instant;
 use std::{ffi::CString, time::Duration};
-use zenoh::ZFuture;
 use zenoh::net::CallbackSubscriber;
 use zenoh::net::Reliability;
 use zenoh::net::Session;
 use zenoh::net::SubInfo;
 use zenoh::net::SubMode;
+use zenoh::ZFuture;
 use zenoh_util::zwrite;
 
 const QOS_EVENT_TYPE_NAME: &str = "far_dds_bridge_msgs::msg::QosEvent";
