@@ -33,7 +33,7 @@ zenoh = { git = "https://github.com/eclipse-zenoh/zenoh" }
 zenoh-plugin-rest = { git = "https://github.com/eclipse-zenoh/zenoh", default-features = false }
 zenoh-plugin-trait = { git = "https://github.com/eclipse-zenoh/zenoh", default-features = false }
 zplugin-dds = { path = "../zplugin-dds", default-features = false }
-
+uhlc = "0.3.1"
 
 [dependencies.async-std]
 version = "1.9.0"
