@@ -120,7 +120,12 @@ r#"-w, --generalise-pub=[String]...   'A list of key expression to use for gener
         .arg(Arg::from_usage(
 r#"-f, --fwd-discovery   'When set, rather than creating a local route when discovering a local DDS entity, this discovery info is forwarded to the remote plugins/bridges. Those will create the routes, including a replica of the discovered entity.'"#
             ).alias("forward-discovery")
-        );
+        )
+        // FAR extension: --deadline option
+        .arg(Arg::from_usage(
+r#"--deadline=[topic_regex=duration]... 'A topic with its deadline duration, meaning that if a data is not received
+in the `duration` interval (in milliseconds), a QosEvent() is published on `qos_event`topic."#
+        ));
     let args = app.get_matches();
 
     // load config file at first
@@ -184,6 +189,8 @@ r#"-f, --fwd-discovery   'When set, rather than creating a local route when disc
             .insert_json5("plugins/dds/forward_discovery", "true")
             .unwrap();
     }
+    // FAR extension: --deadline option
+    insert_json5!(config, args, "plugins/dds/deadlines", for "deadline", .collect::<Vec<_>>());
     config
 }
 
