@@ -883,6 +883,12 @@ impl<'a> DdsPluginRuntime<'a> {
         self.deadlines_supervisor.run(self.dp, qos_event_dw);
 
         let scope = self.config.scope.clone();
+        // FAR extension: --sub-scope option
+        let sub_scope = if self.config.sub_scope.is_empty() {
+            scope.clone()
+        } else {
+            self.config.sub_scope.clone()
+        };
         let admin_query_rcv = admin_queryable.receiver();
         loop {
             select!(
@@ -985,7 +991,7 @@ impl<'a> DdsPluginRuntime<'a> {
 
                             // create 1 route per partition, or just 1 if no partition
                             if entity.qos.partitions.is_empty() {
-                                let zkey = format!("{}/{}", scope, entity.topic_name);
+                                let zkey = format!("{}/{}", sub_scope, entity.topic_name);
                                 let route_status = self.try_add_route_to_dds(&zkey, &entity.topic_name, &entity.type_name, entity.keyless, qos).await;
                                 if let RouteStatus::Routed(ref route_key) = route_status {
                                     if let Some(r) = self.routes_to_dds.get_mut(route_key) {
@@ -996,7 +1002,7 @@ impl<'a> DdsPluginRuntime<'a> {
                                 entity.routes.insert("*".to_string(), route_status);
                             } else {
                                 for p in &entity.qos.partitions {
-                                    let zkey = format!("{}/{}/{}", scope, p, entity.topic_name);
+                                    let zkey = format!("{}/{}/{}", sub_scope, p, entity.topic_name);
                                     let route_status = self.try_add_route_to_dds(&zkey, &entity.topic_name, &entity.type_name, entity.keyless, qos.clone()).await;
                                     if let RouteStatus::Routed(ref route_key) = route_status {
                                         if let Some(r) = self.routes_to_dds.get_mut(route_key) {

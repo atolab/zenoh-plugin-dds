@@ -84,6 +84,9 @@ r#"--rest-http-port=[PORT | IP:PORT] \
 r#"-s, --scope=[String]   'A string added as prefix to all routed DDS topics when mapped to a zenoh resource. This should be used to avoid conflicts when several distinct DDS systems using the same topics names are routed via zenoh'"#
         ))
         .arg(Arg::from_usage(
+r#"--sub-scope=[String]   'A string added as prefix to all routed DDS topics when mapped to a zenoh subscription. Ignore in fwd-discovery mode. (default: same as value as --scope)'"#
+        ))
+        .arg(Arg::from_usage(
 r#"-d, --domain=[ID]   'The DDS Domain ID (if using with ROS this should be the same as ROS_DOMAIN_ID).'"#)
             .default_value(&*DEFAULT_DOMAIN_STR)
         )
@@ -189,6 +192,8 @@ in the `duration` interval (in milliseconds), a QosEvent() is published on `qos_
             .insert_json5("plugins/dds/forward_discovery", "true")
             .unwrap();
     }
+    // FAR extension: --sub-scope option
+    insert_json5!(config, args, "plugins/dds/sub_scope", if "sub-scope",);
     // FAR extension: --deadline option
     insert_json5!(config, args, "plugins/dds/deadlines", for "deadline", .collect::<Vec<_>>());
     config

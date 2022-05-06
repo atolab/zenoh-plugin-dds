@@ -26,6 +26,9 @@ pub const DEFAULT_RELIABLE_ROUTES_BLOCKING: bool = true;
 pub struct Config {
     #[serde(default = "default_scope", deserialize_with = "deserialize_scope")]
     pub scope: String,
+    // FAR extension: --sub-scope option
+    #[serde(default = "default_scope", deserialize_with = "deserialize_scope")]
+    pub sub_scope: String,
     #[serde(default = "default_domain")]
     pub domain: u32,
     #[serde(default)]
