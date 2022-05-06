@@ -47,6 +47,7 @@ use zenoh_ext::{PublicationCache, QueryingSubscriber, SessionExt};
 
 pub mod config;
 mod dds_mgt;
+mod far_ext;
 mod qos;
 mod ros_discovery;
 use config::Config;
@@ -854,6 +855,9 @@ impl<'a> DdsPluginRuntime<'a> {
     ) {
         debug!(r#"Run in "local discovery" mode"#);
 
+        // FAR extenstion: declare writer on qos_event
+        let qos_event_dw = far_ext::create_qos_event_writer(self.dp);
+
         let scope = self.config.scope.clone();
         let admin_query_rcv = admin_queryable.receiver();
         loop {
@@ -1012,22 +1016,30 @@ impl<'a> DdsPluginRuntime<'a> {
                 },
 
                 group_event = group_stream.next().fuse() => {
-                    if let Some(GroupEvent::Join(JoinEvent{member})) = group_event {
-                        debug!("New zenoh_dds_plugin detected: {}", member.id());
-                        // make all QueryingSubscriber to query this new member
-                        for (zkey, zsub) in &mut self.routes_to_dds {
-                            if let ZSubscriber::QueryingSubscriber(sub) = &mut zsub.zenoh_subscriber {
-                                let rkey: KeyExpr = format!("{}/{}/{}", PUB_CACHE_QUERY_PREFIX, member.id(), zkey).into();
-                                debug!("Query for TRANSIENT_LOCAL topic on: {}", rkey);
-                                let target = QueryTarget {
-                                    kind: PublicationCache::QUERYABLE_KIND,
-                                    target: Target::All,
-                                };
-                                if let Err(e) = sub.query_on(Selector::from(&rkey), target, QueryConsolidation::none()).await {
-                                    warn!("Query on {} for TRANSIENT_LOCAL topic failed: {}", rkey, e);
+                    match group_event {
+                        Some(GroupEvent::Join(JoinEvent{member})) => {
+                            debug!("New zenoh_dds_plugin detected: {}", member.id());
+                            // FAR extenstion: publish on qos_event
+                            far_ext::publish_qos_event(self.dp, qos_event_dw, "*", member.id(), far_ext::QOS_EVENT_ALIVE);
+                            // make all QueryingSubscriber to query this new member
+                            for (zkey, zsub) in &mut self.routes_to_dds {
+                                if let ZSubscriber::QueryingSubscriber(sub) = &mut zsub.zenoh_subscriber {
+                                    let rkey: KeyExpr = format!("{}/{}/{}", PUB_CACHE_QUERY_PREFIX, member.id(), zkey).into();
+                                    debug!("Query for TRANSIENT_LOCAL topic on: {}", rkey);
+                                    let target = QueryTarget {
+                                        kind: PublicationCache::QUERYABLE_KIND,
+                                        target: Target::All,
+                                    };
+                                    if let Err(e) = sub.query_on(Selector::from(&rkey), target, QueryConsolidation::none()).await {
+                                        warn!("Query on {} for TRANSIENT_LOCAL topic failed: {}", rkey, e);
+                                    }
                                 }
                             }
                         }
+                        Some(GroupEvent::Leave(LeaveEvent{mid})) | Some(GroupEvent::LeaseExpired(LeaseExpiredEvent{mid})) => {
+                            // FAR extenstion: publish on qos_event
+                            far_ext::publish_qos_event(self.dp, qos_event_dw, "*", &mid, far_ext::QOS_EVENT_NOT_ALIVE);                        }
+                        _ => {}
                     }
                 }
 
