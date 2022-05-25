@@ -1067,6 +1067,7 @@ impl<'a> DdsPluginRuntime<'a> {
                             }
                         }
                         Some(GroupEvent::Leave(LeaveEvent{mid})) | Some(GroupEvent::LeaseExpired(LeaseExpiredEvent{mid})) => {
+                            debug!("Remote zenoh_dds_plugin left: {}", mid);
                             // FAR extension: publish on qos_event
                             far_ext::publish_qos_event(self.dp, qos_event_dw, "*", &mid, far_ext::QOS_EVENT_NOT_ALIVE);
                             // FAR extension: cancel all deadlines supervision for this leaving bridge
