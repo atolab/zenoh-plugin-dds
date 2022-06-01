@@ -159,6 +159,8 @@ pub async fn run(runtime: Runtime, config: Config) {
         routes_from_dds: HashMap::<String, FromDdsRoute>::new(),
         routes_to_dds: HashMap::<String, ToDdsRoute>::new(),
         admin_space: HashMap::<String, AdminRef>::new(),
+        // FAR extension: deadline superviser
+        deadlines_supervisor: far_ext::DeadlinesSupervisor::new(&zsession),
     };
 
     dds_plugin.run().await;
@@ -259,6 +261,8 @@ struct DdsPluginRuntime<'a> {
     // admin space: index is the admin_path (relative to admin_prefix)
     // value is the JSon string to return to queries.
     admin_space: HashMap<String, AdminRef>,
+    // FAR extension: deadlines superviser
+    deadlines_supervisor: far_ext::DeadlinesSupervisor<'a>,
 }
 
 impl Serialize for DdsPluginRuntime<'_> {
@@ -299,6 +303,16 @@ impl Serialize for DdsPluginRuntime<'_> {
         s.serialize_field(
             "reliable_routes_blocking",
             &self.config.reliable_routes_blocking,
+        )?;
+        // FAR extension: display deadlines in config in admin space
+        s.serialize_field(
+            "deadlines",
+            &self
+                .config
+                .deadlines
+                .iter()
+                .map(|(re, deadline)| format!("{}={}", re, deadline.as_millis()))
+                .collect::<Vec<String>>(),
         )?;
         s.end()
     }
@@ -673,6 +687,14 @@ impl<'a> DdsPluginRuntime<'a> {
                     ZSubscriber::Subscriber(sub)
                 };
 
+                // FAR extension: check if the topic is configured with a deadline, and if yes supervise it
+                for (regex, deadline) in &self.config.deadlines {
+                    if regex.is_match(topic_name) {
+                        self.deadlines_supervisor.supervise(zkey, *deadline).await;
+                        break;
+                    }
+                }
+
                 self.insert_route_to_dds(
                     zkey,
                     ToDdsRoute {
@@ -860,6 +882,8 @@ impl<'a> DdsPluginRuntime<'a> {
 
         // FAR extension: declare writer on qos_event
         let qos_event_dw = far_ext::create_qos_event_writer(self.dp);
+        // FAR extension: start DeadlinesSupervisor loop
+        self.deadlines_supervisor.run(self.dp, qos_event_dw);
 
         let scope = self.config.scope.clone();
         loop {
@@ -1038,11 +1062,15 @@ impl<'a> DdsPluginRuntime<'a> {
                             debug!("Remote zenoh_dds_plugin left: {} (voluntarily)", mid);
                             // FAR extenstion: publish on qos_event
                             far_ext::publish_qos_event(self.dp, qos_event_dw, "*", &mid, far_ext::QOS_EVENT_NOT_ALIVE);
+                            // FAR extension: cancel all deadlines supervision for this leaving bridge
+                            self.deadlines_supervisor.cancel_all_deadline(&mid);
                         }
                         Ok(GroupEvent::LeaseExpired(LeaseExpiredEvent{mid})) => {
                             debug!("Remote zenoh_dds_plugin left: {} (lease expired)", mid);
                             // FAR extenstion: publish on qos_event
                             far_ext::publish_qos_event(self.dp, qos_event_dw, "*", &mid, far_ext::QOS_EVENT_NOT_ALIVE);
+                            // FAR extension: cancel all deadlines supervision for this leaving bridge
+                            self.deadlines_supervisor.cancel_all_deadline(&mid);
                         }
                         Ok(_) => {} // ignore other GroupEvents
                         Err(e) => warn!("Error receiving GroupEvent: {}", e)
@@ -1071,6 +1099,8 @@ impl<'a> DdsPluginRuntime<'a> {
 
         // FAR extension: declare writer on qos_event
         let qos_event_dw = far_ext::create_qos_event_writer(self.dp);
+        // FAR extension: start DeadlinesSupervisor loop
+        self.deadlines_supervisor.run(self.dp, qos_event_dw);
 
         // The admin paths where discovery info will be forwarded to remote DDS plugins.
         // Note: "/@dds_fwd_disco" is used as prefix instead of "/@/..." to not have the PublicationCache replying to queries on admin space.
@@ -1428,6 +1458,8 @@ impl<'a> DdsPluginRuntime<'a> {
                             debug!("Remote zenoh_dds_plugin left: {}", mid);
                             // FAR extenstion: publish on qos_event
                             far_ext::publish_qos_event(self.dp, qos_event_dw, "*", &mid, far_ext::QOS_EVENT_NOT_ALIVE);
+                            // FAR extension: cancel all deadlines supervision for this leaving bridge
+                            self.deadlines_supervisor.cancel_all_deadline(&mid);
                             // remove all the references to the plugin's enities, removing no longer used routes
                             // and updating/re-publishing ParticipantEntitiesInfo
                             let admin_space = &mut self.admin_space;
