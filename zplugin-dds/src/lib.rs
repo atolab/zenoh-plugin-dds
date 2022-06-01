@@ -45,6 +45,7 @@ use zenoh_ext::{CallbackQueryingSubscriber, PublicationCache, SessionExt};
 
 pub mod config;
 mod dds_mgt;
+mod far_ext;
 mod qos;
 mod ros_discovery;
 use config::Config;
@@ -857,6 +858,9 @@ impl<'a> DdsPluginRuntime<'a> {
     ) {
         debug!(r#"Run in "local discovery" mode"#);
 
+        // FAR extension: declare writer on qos_event
+        let qos_event_dw = far_ext::create_qos_event_writer(self.dp);
+
         let scope = self.config.scope.clone();
         loop {
             select!(
@@ -1017,6 +1021,8 @@ impl<'a> DdsPluginRuntime<'a> {
                     match group_event {
                         Ok(GroupEvent::Join(JoinEvent{member})) => {
                             debug!("New zenoh_dds_plugin detected: {}", member.id());
+                            // FAR extension: publish on qos_event
+                            far_ext::publish_qos_event(self.dp, qos_event_dw, "*", member.id(), far_ext::QOS_EVENT_ALIVE);
                             // make all QueryingSubscriber to query this new member
                             for (zkey, zsub) in &mut self.routes_to_dds {
                                 if let ZSubscriber::QueryingSubscriber(sub) = &mut zsub.zenoh_subscriber {
@@ -1027,6 +1033,16 @@ impl<'a> DdsPluginRuntime<'a> {
                                     }
                                 }
                             }
+                        }
+                        Ok(GroupEvent::Leave(LeaveEvent{mid})) => {
+                            debug!("Remote zenoh_dds_plugin left: {} (voluntarily)", mid);
+                            // FAR extenstion: publish on qos_event
+                            far_ext::publish_qos_event(self.dp, qos_event_dw, "*", &mid, far_ext::QOS_EVENT_NOT_ALIVE);
+                        }
+                        Ok(GroupEvent::LeaseExpired(LeaseExpiredEvent{mid})) => {
+                            debug!("Remote zenoh_dds_plugin left: {} (lease expired)", mid);
+                            // FAR extenstion: publish on qos_event
+                            far_ext::publish_qos_event(self.dp, qos_event_dw, "*", &mid, far_ext::QOS_EVENT_NOT_ALIVE);
                         }
                         Ok(_) => {} // ignore other GroupEvents
                         Err(e) => warn!("Error receiving GroupEvent: {}", e)
@@ -1052,6 +1068,9 @@ impl<'a> DdsPluginRuntime<'a> {
         admin_queryable: &FlumeQueryable<'_>,
     ) {
         debug!(r#"Run in "forward discovery" mode"#);
+
+        // FAR extension: declare writer on qos_event
+        let qos_event_dw = far_ext::create_qos_event_writer(self.dp);
 
         // The admin paths where discovery info will be forwarded to remote DDS plugins.
         // Note: "/@dds_fwd_disco" is used as prefix instead of "/@/..." to not have the PublicationCache replying to queries on admin space.
@@ -1386,6 +1405,8 @@ impl<'a> DdsPluginRuntime<'a> {
                     match group_event {
                         Ok(GroupEvent::Join(JoinEvent{member})) => {
                             debug!("New zenoh_dds_plugin detected: {}", member.id());
+                            // FAR extension: publish on qos_event
+                            far_ext::publish_qos_event(self.dp, qos_event_dw, "*", member.id(), far_ext::QOS_EVENT_ALIVE);
                             // query for past publications of discocvery messages from this new member
                             let key: KeyExpr = format!("/@dds_fwd_disco/{}{}/**", member.id(), self.config.scope).into();
                             debug!("Query past discovery messages from {} on {}", member.id(), key);
@@ -1405,6 +1426,8 @@ impl<'a> DdsPluginRuntime<'a> {
                         }
                         Ok(GroupEvent::Leave(LeaveEvent{mid})) | Ok(GroupEvent::LeaseExpired(LeaseExpiredEvent{mid})) => {
                             debug!("Remote zenoh_dds_plugin left: {}", mid);
+                            // FAR extenstion: publish on qos_event
+                            far_ext::publish_qos_event(self.dp, qos_event_dw, "*", &mid, far_ext::QOS_EVENT_NOT_ALIVE);
                             // remove all the references to the plugin's enities, removing no longer used routes
                             // and updating/re-publishing ParticipantEntitiesInfo
                             let admin_space = &mut self.admin_space;
