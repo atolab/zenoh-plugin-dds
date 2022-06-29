@@ -126,8 +126,14 @@ r#"-f, --fwd-discovery   'When set, rather than creating a local route when disc
         .arg(Arg::from_usage(
 r#"--deadline=[topic_regex=duration]... 'A topic with its deadline duration, meaning that if a data is not received
 in the `duration` interval (in milliseconds), a QosEvent() is published on `qos_event`topic."#
+        ))
+        // FAR extension: --transient_local_queries_timeout option
+        .arg(Arg::from_usage(
+r#"--transient_local_queries_timeout=[float]... 'A float in seconds (default: 5.0 sec) that will be used as a timeout when the bridge
+queries for historical data for TRANSIENT_LOCAL DDS Readers it serves (i.e. if the query to the remote bridge exceed the timeout, 
+some historical samples might be not routed to the Readers, but the route will not be blocked forever)."#
         ));
-    let args = app.get_matches();
+        let args = app.get_matches();
 
     // load config file at first
     let mut config = match args.value_of("config") {

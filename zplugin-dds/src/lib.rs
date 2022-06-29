@@ -655,6 +655,7 @@ impl<'a> DdsPluginRuntime<'a> {
                         .callback(subscriber_callback)
                         .reliable()
                         .query_selector(&format!("{}/*{}", PUB_CACHE_QUERY_PREFIX, zkey))
+                        .query_timeout(self.config.transient_local_queries_timeout)
                         .res()
                         .await
                     {
@@ -1052,7 +1053,7 @@ impl<'a> DdsPluginRuntime<'a> {
                                 if let ZSubscriber::QueryingSubscriber(sub) = &mut zsub.zenoh_subscriber {
                                     let rkey: KeyExpr = format!("{}/{}/{}", PUB_CACHE_QUERY_PREFIX, member.id(), zkey).into();
                                     debug!("Query for TRANSIENT_LOCAL topic on: {}", rkey);
-                                    if let Err(e) = sub.query_on(Selector::from(&rkey), QueryTarget::All, QueryConsolidation::none()).res().await {
+                                    if let Err(e) = sub.query_on(Selector::from(&rkey), QueryTarget::All, QueryConsolidation::none(), self.config.transient_local_queries_timeout).res().await {
                                         warn!("Query on {} for TRANSIENT_LOCAL topic failed: {}", rkey, e);
                                     }
                                 }
@@ -1440,7 +1441,7 @@ impl<'a> DdsPluginRuntime<'a> {
                             // query for past publications of discocvery messages from this new member
                             let key: KeyExpr = format!("/@dds_fwd_disco/{}{}/**", member.id(), self.config.scope).into();
                             debug!("Query past discovery messages from {} on {}", member.id(), key);
-                            if let Err(e) = fwd_disco_sub.query_on(Selector::from(&key), QueryTarget::All, QueryConsolidation::none()).res().await {
+                            if let Err(e) = fwd_disco_sub.query_on(Selector::from(&key), QueryTarget::All, QueryConsolidation::none(), self.config.transient_local_queries_timeout).res().await {
                                 warn!("Query on {} for discovery messages failed: {}", key, e);
                             }
                             // make all QueryingSubscriber to query this new member
@@ -1448,7 +1449,7 @@ impl<'a> DdsPluginRuntime<'a> {
                                 if let ZSubscriber::QueryingSubscriber(sub) = &mut zsub.zenoh_subscriber {
                                     let rkey: KeyExpr = format!("{}/{}/{}", PUB_CACHE_QUERY_PREFIX, member.id(), zkey).into();
                                     debug!("Query for TRANSIENT_LOCAL topic on: {}", rkey);
-                                    if let Err(e) = sub.query_on(Selector::from(&rkey), QueryTarget::All, QueryConsolidation::none()).res().await {
+                                    if let Err(e) = sub.query_on(Selector::from(&rkey), QueryTarget::All, QueryConsolidation::none(), self.config.transient_local_queries_timeout).res().await {
                                         warn!("Query on {} for TRANSIENT_LOCAL topic failed: {}", rkey, e);
                                     }
                                 }
