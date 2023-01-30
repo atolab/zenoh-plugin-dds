@@ -59,6 +59,9 @@ pub struct Config {
         deserialize_with = "deserialize_duration"
     )]
     pub queries_timeout: Duration,
+    // FAR extension: deadlines supervision option
+    #[serde(default, deserialize_with = "deserialize_deadlines")]
+    pub deadlines: Vec<(Regex, Duration)>,
     #[serde(default)]
     __required__: bool,
     #[serde(default, deserialize_with = "deserialize_paths")]
@@ -162,6 +165,29 @@ where
 {
     let seconds: f32 = Deserialize::deserialize(deserializer)?;
     Ok(Duration::from_secs_f32(seconds))
+}
+
+// FAR extension: deadlines supervision option
+fn deserialize_deadlines<'de, D>(deserializer: D) -> Result<Vec<(Regex, Duration)>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let strs: Vec<String> = Deserialize::deserialize(deserializer)?;
+    let mut result: Vec<(Regex, Duration)> = Vec::with_capacity(strs.len());
+    for s in strs {
+        let i = s
+            .find('=')
+            .ok_or_else(|| de::Error::custom(format!("Invalid 'deadline': {s}")))?;
+        let regex = Regex::new(&s[0..i])
+            .map_err(|e| de::Error::custom(format!("Invalid regex for 'deadline': '{s}': {e}")))?;
+        let duration: u64 = s[i + 1..].parse().map_err(|e| {
+            de::Error::custom(format!(
+                "Invalid milliseconds value (u64) for 'max_frequency': '{s}': {e}"
+            ))
+        })?;
+        result.push((regex, Duration::from_millis(duration)));
+    }
+    Ok(result)
 }
 
 fn default_forward_discovery() -> bool {

@@ -141,7 +141,11 @@ queries any other remote bridge for discovery information and for historical dat
         ))
         .arg(Arg::from_usage(
 r#"--watchdog=[PERIOD]   'Experimental!! Run a watchdog thread that monitors the bridge's async executor and reports as error log any stalled status during the specified period (default: 1.0 second)'"#
-        ).default_missing_value("1.0"));
+        ).default_missing_value("1.0"))
+        .arg(Arg::from_usage(
+r#"--deadline=[topic_regex=duration]... 'A topic with its deadline duration, meaning that if a data is not received
+in the `duration` interval (in milliseconds), a QosEvent() is published on `qos_event`topic."#
+        ));
     let args = app.get_matches();
 
     // load config file at first
@@ -215,6 +219,8 @@ r#"--watchdog=[PERIOD]   'Experimental!! Run a watchdog thread that monitors the
     } else {
         None
     };
+    // FAR extension: --deadline option
+    insert_json5!(config, args, "plugins/dds/deadlines", for "deadline", .collect::<Vec<_>>());
 
     (config, watchdog_period)
 }

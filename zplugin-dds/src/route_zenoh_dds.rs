@@ -101,7 +101,7 @@ where
 
 impl RouteZenohDDS<'_> {
     pub(crate) async fn new<'a, 'b>(
-        plugin: &DdsPluginRuntime<'a>,
+        plugin: &mut DdsPluginRuntime<'a>,
         ke: OwnedKeyExpr,
         querying_subscriber: bool,
         topic_name: String,
@@ -203,6 +203,17 @@ impl RouteZenohDDS<'_> {
                 })?;
             ZSubscriber::Subscriber(sub)
         };
+
+        // FAR extension: check if the topic is configured with a deadline, and if yes supervise it
+        for (regex, deadline) in &plugin.config.deadlines {
+            if regex.is_match(&topic_name) {
+                plugin
+                    .deadlines_supervisor
+                    .supervise(ke.clone(), *deadline)
+                    .await;
+                break;
+            }
+        }
 
         Ok(RouteZenohDDS {
             zenoh_subscriber,

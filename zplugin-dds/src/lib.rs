@@ -205,6 +205,8 @@ pub async fn run(runtime: Runtime, config: Config) {
         routes_from_dds: HashMap::<OwnedKeyExpr, RouteDDSZenoh>::new(),
         routes_to_dds: HashMap::<OwnedKeyExpr, RouteZenohDDS>::new(),
         admin_space: HashMap::<OwnedKeyExpr, AdminRef>::new(),
+        // FAR extension: deadline superviser
+        deadlines_supervisor: far_ext::DeadlinesSupervisor::new(&zsession),
     };
 
     dds_plugin.run().await;
@@ -238,6 +240,8 @@ pub(crate) struct DdsPluginRuntime<'a> {
     // admin space: index is the admin_keyexpr (relative to admin_prefix)
     // value is the JSon string to return to queries.
     admin_space: HashMap<OwnedKeyExpr, AdminRef>,
+    // FAR extension: deadlines superviser
+    deadlines_supervisor: far_ext::DeadlinesSupervisor<'a>,
 }
 
 impl Serialize for DdsPluginRuntime<'_> {
@@ -278,6 +282,16 @@ impl Serialize for DdsPluginRuntime<'_> {
         s.serialize_field(
             "reliable_routes_blocking",
             &self.config.reliable_routes_blocking,
+        )?;
+        // FAR extension: display deadlines in config in admin space
+        s.serialize_field(
+            "deadlines",
+            &self
+                .config
+                .deadlines
+                .iter()
+                .map(|(re, deadline)| format!("{}={}", re, deadline.as_millis()))
+                .collect::<Vec<String>>(),
         )?;
         s.end()
     }
@@ -665,6 +679,8 @@ impl<'a> DdsPluginRuntime<'a> {
 
         // FAR extension: declare writer on qos_event
         let qos_event_dw = far_ext::create_qos_event_writer(self.dp);
+        // FAR extension: start DeadlinesSupervisor loop
+        self.deadlines_supervisor.run(self.dp, qos_event_dw);
 
         loop {
             select!(
@@ -839,11 +855,15 @@ impl<'a> DdsPluginRuntime<'a> {
                             debug!("Remote zenoh_dds_plugin left: {} (voluntarily)", mid);
                             // FAR extenstion: publish on qos_event
                             far_ext::publish_qos_event(self.dp, qos_event_dw, "*", &mid, far_ext::QOS_EVENT_NOT_ALIVE);
+                            // FAR extension: cancel all deadlines supervision for this leaving bridge
+                            self.deadlines_supervisor.cancel_all_deadline(&mid);
                         }
                         Ok(GroupEvent::LeaseExpired(LeaseExpiredEvent{mid})) => {
                             debug!("Remote zenoh_dds_plugin left: {} (lease expired)", mid);
                             // FAR extenstion: publish on qos_event
                             far_ext::publish_qos_event(self.dp, qos_event_dw, "*", &mid, far_ext::QOS_EVENT_NOT_ALIVE);
+                            // FAR extension: cancel all deadlines supervision for this leaving bridge
+                            self.deadlines_supervisor.cancel_all_deadline(&mid);
                         }
                         Ok(_) => {} // ignore other GroupEvents
                         Err(e) => warn!("Error receiving GroupEvent: {}", e)
@@ -872,6 +892,8 @@ impl<'a> DdsPluginRuntime<'a> {
 
         // FAR extension: declare writer on qos_event
         let qos_event_dw = far_ext::create_qos_event_writer(self.dp);
+        // FAR extension: start DeadlinesSupervisor loop
+        self.deadlines_supervisor.run(self.dp, qos_event_dw);
 
         // The data space where all discovery info are fowarded:
         //   - writers discovery on <KE_PREFIX_FWD_DISCO>/<uuid>/[<scope>]/writer/<dds_entity_admin_key>
@@ -1299,6 +1321,8 @@ impl<'a> DdsPluginRuntime<'a> {
 
                             // FAR extenstion: publish on qos_event
                             far_ext::publish_qos_event(self.dp, qos_event_dw, "*", &mid, far_ext::QOS_EVENT_NOT_ALIVE);
+                            // FAR extension: cancel all deadlines supervision for this leaving bridge
+                            self.deadlines_supervisor.cancel_all_deadline(&mid);
                             // remove all the references to the plugin's enities, removing no longer used routes
                             // and updating/re-publishing ParticipantEntitiesInfo
                             let admin_space = &mut self.admin_space;
