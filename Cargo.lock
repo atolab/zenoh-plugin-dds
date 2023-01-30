@@ -3903,6 +3903,7 @@ dependencies = [
  "regex",
  "rustc_version 0.4.0",
  "serde",
+ "serde_derive",
  "serde_json",
  "zenoh",
  "zenoh-collections",

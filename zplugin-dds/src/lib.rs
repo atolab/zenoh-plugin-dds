@@ -43,6 +43,7 @@ use zenoh_util::{Timed, TimedEvent, Timer};
 
 pub mod config;
 mod dds_mgt;
+mod far_ext;
 mod qos;
 mod ros_discovery;
 mod route_dds_zenoh;
@@ -662,6 +663,9 @@ impl<'a> DdsPluginRuntime<'a> {
     ) {
         debug!(r#"Run in "local discovery" mode"#);
 
+        // FAR extension: declare writer on qos_event
+        let qos_event_dw = far_ext::create_qos_event_writer(self.dp);
+
         loop {
             select!(
                 evt = dds_disco_rcv.recv_async() => {
@@ -820,6 +824,8 @@ impl<'a> DdsPluginRuntime<'a> {
                     match group_event {
                         Ok(GroupEvent::Join(JoinEvent{member})) => {
                             debug!("New zenoh_dds_plugin detected: {}", member.id());
+                            // FAR extension: publish on qos_event
+                            far_ext::publish_qos_event(self.dp, qos_event_dw, "*", member.id(), far_ext::QOS_EVENT_ALIVE);
                             if let Ok(member_id) = keyexpr::new(member.id()) {
                                 // make all QueryingSubscriber to query this new member
                                 for (zkey, route) in &mut self.routes_to_dds {
@@ -828,6 +834,16 @@ impl<'a> DdsPluginRuntime<'a> {
                             } else {
                                 error!("Can't convert member id '{}' into a KeyExpr", member.id());
                             }
+                        }
+                        Ok(GroupEvent::Leave(LeaveEvent{mid})) => {
+                            debug!("Remote zenoh_dds_plugin left: {} (voluntarily)", mid);
+                            // FAR extenstion: publish on qos_event
+                            far_ext::publish_qos_event(self.dp, qos_event_dw, "*", &mid, far_ext::QOS_EVENT_NOT_ALIVE);
+                        }
+                        Ok(GroupEvent::LeaseExpired(LeaseExpiredEvent{mid})) => {
+                            debug!("Remote zenoh_dds_plugin left: {} (lease expired)", mid);
+                            // FAR extenstion: publish on qos_event
+                            far_ext::publish_qos_event(self.dp, qos_event_dw, "*", &mid, far_ext::QOS_EVENT_NOT_ALIVE);
                         }
                         Ok(_) => {} // ignore other GroupEvents
                         Err(e) => warn!("Error receiving GroupEvent: {}", e)
@@ -853,6 +869,9 @@ impl<'a> DdsPluginRuntime<'a> {
         admin_queryable: &Queryable<'_, flume::Receiver<Query>>,
     ) {
         debug!(r#"Run in "forward discovery" mode"#);
+
+        // FAR extension: declare writer on qos_event
+        let qos_event_dw = far_ext::create_qos_event_writer(self.dp);
 
         // The data space where all discovery info are fowarded:
         //   - writers discovery on <KE_PREFIX_FWD_DISCO>/<uuid>/[<scope>]/writer/<dds_entity_admin_key>
@@ -1253,6 +1272,8 @@ impl<'a> DdsPluginRuntime<'a> {
                     match group_event {
                         Ok(GroupEvent::Join(JoinEvent{member})) => {
                             debug!("New zenoh_dds_plugin detected: {}", member.id());
+                            // FAR extension: publish on qos_event
+                            far_ext::publish_qos_event(self.dp, qos_event_dw, "*", member.id(), far_ext::QOS_EVENT_ALIVE);
                             // query for past publications of discocvery messages from this new member
                             let key = if let Some(scope) = &self.config.scope {
                                 *KE_PREFIX_FWD_DISCO / ke_for_sure!(member.id()) / scope / *KE_ANY_N_SEGMENT
@@ -1268,8 +1289,16 @@ impl<'a> DdsPluginRuntime<'a> {
                                 route.query_historical_publications(|| (*KE_PREFIX_PUB_CACHE / ke_for_sure!(member.id()) / zkey).into(), self.config.queries_timeout).await;
                             }
                         }
-                        Ok(GroupEvent::Leave(LeaveEvent{mid})) | Ok(GroupEvent::LeaseExpired(LeaseExpiredEvent{mid})) => {
-                            debug!("Remote zenoh_dds_plugin left: {}", mid);
+                        Ok(evt @ GroupEvent::Leave(_)) | Ok(evt @ GroupEvent::LeaseExpired(_)) => {
+                            let (reason, mid) = match evt {
+                                GroupEvent::Leave(LeaveEvent{mid}) => ("voluntarily", mid),
+                                GroupEvent::LeaseExpired(LeaseExpiredEvent{mid}) => ("lease expired", mid),
+                                _ => unreachable!("")
+                            };
+                            debug!("Remote zenoh_dds_plugin left: {} ({})", mid, reason);
+
+                            // FAR extenstion: publish on qos_event
+                            far_ext::publish_qos_event(self.dp, qos_event_dw, "*", &mid, far_ext::QOS_EVENT_NOT_ALIVE);
                             // remove all the references to the plugin's enities, removing no longer used routes
                             // and updating/re-publishing ParticipantEntitiesInfo
                             let admin_space = &mut self.admin_space;
