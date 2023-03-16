@@ -112,7 +112,10 @@ impl Plugin for DDSPlugin {
             .ok_or_else(|| zerror!("Plugin `{}`: missing config", name))?;
         let config: Config = serde_json::from_value(plugin_conf.clone())
             .map_err(|e| zerror!("Plugin `{}` configuration error: {}", name, e))?;
-        async_std::task::spawn(run(runtime.clone(), config));
+        async_std::task::spawn_blocking({
+            let runtime = runtime.clone();
+            move || async_std::task::block_on(run(runtime, config))
+        });
         Ok(Box::new(DDSPlugin))
     }
 }
