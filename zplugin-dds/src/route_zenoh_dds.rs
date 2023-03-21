@@ -178,12 +178,13 @@ impl RouteZenohDDS<'_> {
             let sub = plugin
                 .zsession
                 .declare_subscriber(ke.clone())
-                .querying()
                 .callback(subscriber_callback)
                 .allowed_origin(Locality::Remote) // Allow only remote publications to avoid loops
                 .reliable()
-                .query_timeout(plugin.config.queries_timeout)
+                .querying()
                 .query_selector(query_selector)
+                .query_accept_replies(ReplyKeyExpr::Any)
+                .query_timeout(plugin.config.queries_timeout)
                 .res()
                 .await
                 .map_err(|e| {
