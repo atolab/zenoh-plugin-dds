@@ -28,6 +28,7 @@ use std::mem::ManuallyDrop;
 use std::sync::Arc;
 use std::time::Duration;
 use zenoh::buffers::SplitBuffer;
+use zenoh::liveliness::LivelinessToken;
 use zenoh::plugins::{Plugin, RunningPluginTrait, Runtime, ZenohPlugin};
 use zenoh::prelude::r#async::AsyncResolve;
 use zenoh::prelude::*;
@@ -37,8 +38,7 @@ use zenoh::queryable::{Query, Queryable};
 use zenoh::Result as ZResult;
 use zenoh::Session;
 use zenoh_core::{bail, zerror};
-use zenoh_ext::group::{Group, GroupEvent, JoinEvent, LeaseExpiredEvent, LeaveEvent, Member};
-use zenoh_ext::SessionExt;
+use zenoh_ext::{SessionExt, SubscriberBuilderExt};
 use zenoh_util::{Timed, TimedEvent, Timer};
 
 pub mod config;
@@ -65,6 +65,12 @@ macro_rules! ke_for_sure {
     };
 }
 
+macro_rules! member_id {
+    ($val:expr) => {
+        $val.key_expr.as_str().split('/').last().unwrap()
+    };
+}
+
 lazy_static::lazy_static!(
     pub static ref LONG_VERSION: String = format!("{} built with {}", GIT_VERSION, env!("RUSTC_VERSION"));
     static ref LOG_PAYLOAD: bool = std::env::var("Z_LOG_PAYLOAD").is_ok();
@@ -74,6 +80,7 @@ lazy_static::lazy_static!(
     static ref KE_PREFIX_ROUTE_FROM_DDS: &'static keyexpr = ke_for_sure!("route/from_dds");
     static ref KE_PREFIX_PUB_CACHE: &'static keyexpr = ke_for_sure!("@dds_pub_cache");
     static ref KE_PREFIX_FWD_DISCO: &'static keyexpr = ke_for_sure!("@dds_fwd_disco");
+    static ref KE_PREFIX_LIVELINESS_GROUP: &'static keyexpr = ke_for_sure!("zenoh-plugin-dds");
 
     static ref KE_ANY_1_SEGMENT: &'static keyexpr = ke_for_sure!("*");
     static ref KE_ANY_N_SEGMENT: &'static keyexpr = ke_for_sure!("**");
@@ -83,8 +90,6 @@ lazy_static::lazy_static!(
 // possible, too, but I think it is clearer to spell it out completely).
 // Empty configuration fragments are ignored, so it is safe to unconditionally append a comma.
 const CYCLONEDDS_CONFIG_LOCALHOST_ONLY: &str = r#"<CycloneDDS><Domain><General><Interfaces><NetworkInterface address="127.0.0.1" multicast="true"/></Interfaces></General></Domain></CycloneDDS>,"#;
-
-const GROUP_NAME: &str = "zenoh-plugin-dds";
 
 const ROS_DISCOVERY_INFO_POLL_INTERVAL_MS: u64 = 500;
 
@@ -168,9 +173,18 @@ pub async fn run(runtime: Runtime, config: Config) {
         Some(ref id) => id.clone(),
         None => zsession.zid().into_keyexpr(),
     };
-    let member = Member::new(member_id.clone())
-        .unwrap()
-        .lease(config.group_lease);
+    let member = match zsession
+        .liveliness()
+        .declare_token(*KE_PREFIX_LIVELINESS_GROUP / &member_id)
+        .res()
+        .await
+    {
+        Ok(member) => member,
+        Err(e) => {
+            log::error!("Unable todeclare liveliness token for DDS plugin : {:?}", e);
+            return;
+        }
+    };
 
     // if "localhost_only" is set, configure CycloneDDS to use only localhost interface
     if config.localhost_only {
@@ -200,7 +214,7 @@ pub async fn run(runtime: Runtime, config: Config) {
     let mut dds_plugin = DdsPluginRuntime {
         config,
         zsession: &zsession,
-        member,
+        _member: member,
         member_id,
         dp,
         discovered_writers: HashMap::<String, DdsEntity>::new(),
@@ -231,7 +245,7 @@ pub(crate) struct DdsPluginRuntime<'a> {
     // Note: &'a Arc<Session> here to keep the ownership of Session outside this struct
     // and be able to store the publishers/subscribers it creates in this same struct.
     zsession: &'a Arc<Session>,
-    member: Member,
+    _member: LivelinessToken<'a>,
     member_id: OwnedKeyExpr,
     dp: dds_entity_t,
     // maps of all discovered DDS entities (indexed by DDS key)
@@ -609,11 +623,14 @@ impl<'a> DdsPluginRuntime<'a> {
     }
 
     async fn run(&mut self) {
-        // join DDS plugins group
-        let group = Group::join(self.zsession.clone(), GROUP_NAME, self.member.clone())
+        let group_subscriber = self
+            .zsession
+            .liveliness()
+            .declare_subscriber(*KE_PREFIX_LIVELINESS_GROUP / *KE_ANY_N_SEGMENT)
+            .querying()
+            .res()
             .await
-            .unwrap();
-        let group_subscriber = group.subscribe().await;
+            .expect("Failed to create Liveliness Subscriber");
 
         // run DDS discovery
         let (tx, dds_disco_rcv): (Sender<DiscoveryEvent>, Receiver<DiscoveryEvent>) = unbounded();
@@ -673,7 +690,7 @@ impl<'a> DdsPluginRuntime<'a> {
 
     async fn run_local_discovery_mode(
         &mut self,
-        group_subscriber: &Receiver<GroupEvent>,
+        group_subscriber: &Receiver<Sample>,
         dds_disco_rcv: &Receiver<DiscoveryEvent>,
         admin_keyexpr_prefix: OwnedKeyExpr,
         admin_queryable: &Queryable<'_, flume::Receiver<Query>>,
@@ -840,35 +857,29 @@ impl<'a> DdsPluginRuntime<'a> {
                 },
 
                 group_event = group_subscriber.recv_async() => {
-                    match group_event {
-                        Ok(GroupEvent::Join(JoinEvent{member})) => {
-                            debug!("New zenoh_dds_plugin detected: {}", member.id());
+                    match group_event.as_ref().map(|s|s.kind) {
+                        Ok(SampleKind::Put) => {
+                            let mid = member_id!(group_event.as_ref().unwrap());
+                            debug!("New zenoh_dds_plugin detected: {}", mid);
                             // FAR extension: publish on qos_event
-                            far_ext::publish_qos_event(self.dp, qos_event_dw, "*", member.id(), far_ext::QOS_EVENT_ALIVE);
-                            if let Ok(member_id) = keyexpr::new(member.id()) {
+                            far_ext::publish_qos_event(self.dp, qos_event_dw, "*", mid, far_ext::QOS_EVENT_ALIVE);
+                            if let Ok(member_id) = keyexpr::new(mid) {
                                 // make all QueryingSubscriber to query this new member
                                 for (zkey, route) in &mut self.routes_to_dds {
                                     route.query_historical_publications(|| (*KE_PREFIX_PUB_CACHE / member_id / zkey).into(), self.config.queries_timeout).await;
                                 }
                             } else {
-                                error!("Can't convert member id '{}' into a KeyExpr", member.id());
+                                error!("Can't convert member id '{}' into a KeyExpr", mid);
                             }
                         }
-                        Ok(GroupEvent::Leave(LeaveEvent{mid})) => {
-                            debug!("Remote zenoh_dds_plugin left: {} (voluntarily)", mid);
+                        Ok(SampleKind::Delete) => {
+                            let mid = member_id!(group_event.as_ref().unwrap());
+                            debug!("Remote zenoh_dds_plugin left: {}", mid);
                             // FAR extenstion: publish on qos_event
-                            far_ext::publish_qos_event(self.dp, qos_event_dw, "*", &mid, far_ext::QOS_EVENT_NOT_ALIVE);
+                            far_ext::publish_qos_event(self.dp, qos_event_dw, "*", mid, far_ext::QOS_EVENT_NOT_ALIVE);
                             // FAR extension: cancel all deadlines supervision for this leaving bridge
-                            self.deadlines_supervisor.cancel_all_deadline(&mid);
+                            self.deadlines_supervisor.cancel_all_deadline(mid);
                         }
-                        Ok(GroupEvent::LeaseExpired(LeaseExpiredEvent{mid})) => {
-                            debug!("Remote zenoh_dds_plugin left: {} (lease expired)", mid);
-                            // FAR extenstion: publish on qos_event
-                            far_ext::publish_qos_event(self.dp, qos_event_dw, "*", &mid, far_ext::QOS_EVENT_NOT_ALIVE);
-                            // FAR extension: cancel all deadlines supervision for this leaving bridge
-                            self.deadlines_supervisor.cancel_all_deadline(&mid);
-                        }
-                        Ok(_) => {} // ignore other GroupEvents
                         Err(e) => warn!("Error receiving GroupEvent: {}", e)
                     }
                 }
@@ -886,7 +897,7 @@ impl<'a> DdsPluginRuntime<'a> {
 
     async fn run_fwd_discovery_mode(
         &mut self,
-        group_subscriber: &Receiver<GroupEvent>,
+        group_subscriber: &Receiver<Sample>,
         dds_disco_rcv: &Receiver<DiscoveryEvent>,
         admin_keyexpr_prefix: OwnedKeyExpr,
         admin_queryable: &Queryable<'_, flume::Receiver<Query>>,
@@ -952,7 +963,8 @@ impl<'a> DdsPluginRuntime<'a> {
         // Subscribe to remote DDS plugins publications of new Readers/Writers on admin space
         let mut fwd_disco_sub = self
             .zsession
-            .declare_querying_subscriber(fwd_discovery_subscription_key)
+            .declare_subscriber(fwd_discovery_subscription_key)
+            .querying()
             .allowed_origin(Locality::Remote) // Note: ignore my own publications
             .query_timeout(self.config.queries_timeout)
             .res()
@@ -1294,38 +1306,44 @@ impl<'a> DdsPluginRuntime<'a> {
                 },
 
                 group_event = group_subscriber.recv_async() => {
-                    match group_event {
-                        Ok(GroupEvent::Join(JoinEvent{member})) => {
-                            debug!("New zenoh_dds_plugin detected: {}", member.id());
+                    match group_event.as_ref().map(|s|s.kind) {
+                        Ok(SampleKind::Put) => {
+                            let mid = member_id!(group_event.as_ref().unwrap());
+                            debug!("New zenoh_dds_plugin detected: {}", mid);
                             // FAR extension: publish on qos_event
-                            far_ext::publish_qos_event(self.dp, qos_event_dw, "*", member.id(), far_ext::QOS_EVENT_ALIVE);
+                            far_ext::publish_qos_event(self.dp, qos_event_dw, "*", mid, far_ext::QOS_EVENT_ALIVE);
                             // query for past publications of discocvery messages from this new member
                             let key = if let Some(scope) = &self.config.scope {
-                                *KE_PREFIX_FWD_DISCO / ke_for_sure!(member.id()) / scope / *KE_ANY_N_SEGMENT
+                                *KE_PREFIX_FWD_DISCO / ke_for_sure!(mid) / scope / *KE_ANY_N_SEGMENT
                             } else {
-                                *KE_PREFIX_FWD_DISCO / ke_for_sure!(member.id()) / *KE_ANY_N_SEGMENT
+                                *KE_PREFIX_FWD_DISCO / ke_for_sure!(mid) / *KE_ANY_N_SEGMENT
                             };
-                            debug!("Query past discovery messages from {} on {}", member.id(), key);
-                            if let Err(e) = fwd_disco_sub.query_on(Selector::from(&key), QueryTarget::All, ConsolidationMode::None, self.config.queries_timeout).res().await {
+                            debug!("Query past discovery messages from {} on {}", mid, key);
+                            if let Err(e) = fwd_disco_sub.fetch( |cb| {
+                                use zenoh_core::SyncResolve;
+                                self.zsession.get(Selector::from(&key))
+                                    .callback(cb)
+                                    .target(QueryTarget::All)
+                                    .consolidation(ConsolidationMode::None)
+                                    .timeout(self.config.queries_timeout)
+                                    .res_sync()
+                            }).res().await
+                            {
                                 warn!("Query on {} for discovery messages failed: {}", key, e);
                             }
                             // make all QueryingSubscriber to query this new member
                             for (zkey, route) in &mut self.routes_to_dds {
-                                route.query_historical_publications(|| (*KE_PREFIX_PUB_CACHE / ke_for_sure!(member.id()) / zkey).into(), self.config.queries_timeout).await;
+                                route.query_historical_publications(|| (*KE_PREFIX_PUB_CACHE / ke_for_sure!(mid) / zkey).into(), self.config.queries_timeout).await;
                             }
                         }
-                        Ok(evt @ GroupEvent::Leave(_)) | Ok(evt @ GroupEvent::LeaseExpired(_)) => {
-                            let (reason, mid) = match evt {
-                                GroupEvent::Leave(LeaveEvent{mid}) => ("voluntarily", mid),
-                                GroupEvent::LeaseExpired(LeaseExpiredEvent{mid}) => ("lease expired", mid),
-                                _ => unreachable!("")
-                            };
-                            debug!("Remote zenoh_dds_plugin left: {} ({})", mid, reason);
+                        Ok(SampleKind::Delete) => {
+                            let mid = member_id!(group_event.as_ref().unwrap());
+                            debug!("Remote zenoh_dds_plugin left: {}", mid);
 
                             // FAR extenstion: publish on qos_event
-                            far_ext::publish_qos_event(self.dp, qos_event_dw, "*", &mid, far_ext::QOS_EVENT_NOT_ALIVE);
+                            far_ext::publish_qos_event(self.dp, qos_event_dw, "*", mid, far_ext::QOS_EVENT_NOT_ALIVE);
                             // FAR extension: cancel all deadlines supervision for this leaving bridge
-                            self.deadlines_supervisor.cancel_all_deadline(&mid);
+                            self.deadlines_supervisor.cancel_all_deadline(mid);
                             // remove all the references to the plugin's enities, removing no longer used routes
                             // and updating/re-publishing ParticipantEntitiesInfo
                             let admin_space = &mut self.admin_space;
@@ -1378,9 +1396,7 @@ impl<'a> DdsPluginRuntime<'a> {
                                     error!("Error forwarding ros_discovery_info: {}", e);
                                 }
                             }
-
                         }
-                        Ok(_) => {}, // ignore other GroupEvent
                         Err(e) => warn!("Error receiving GroupEvent: {}", e)
                     }
                 }
