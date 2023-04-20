@@ -53,7 +53,7 @@ All release packages can be downloaded from:
 Each subdirectory has the name of the Rust target. See the platforms each target corresponds to on https://doc.rust-lang.org/stable/rustc/platform-support.html
 
 Choose your platform and download:
- - the `zplugin-dds-<version>-<platform>.zip` file for the plugin.  
+ - the `zenoh-plugin-dds-<version>-<platform>.zip` file for the plugin.  
    Then unzip it in the same directory than `zenohd` or to any directory where it can find the plugin library (e.g. /usr/lib)
  - the `zenoh-bridge-dds-<version>-<platform>.zip` file for the standalone executable.  
    Then unzip it where you want, and run the extracted `zenoh-bridge-dds` binary.
@@ -74,6 +74,10 @@ Then either:
 
 > :warning: **WARNING** :warning: : Zenoh and its ecosystem are under active development. When you build from git, make sure you also build from git any other Zenoh repository you plan to use (e.g. binding, plugin, backend, etc.). It may happen that some changes in git are not compatible with the most recent packaged Zenoh release (e.g. deb, docker, pip). We put particular effort in mantaining compatibility between the various git repositories in the Zenoh project.
 
+> :warning: **WARNING** :warning: : As Rust doesn't have a stable ABI, the plugins should be
+built with the exact same Rust version than `zenohd`, and using for `zenoh` dependency the same version (or commit number) than 'zenohd'.
+Otherwise, incompatibilities in memory mapping of shared types between `zenohd` and the library can lead to a `"SIGSEV"` crash.
+
 In order to build the zenoh bridge for DDS you need first to install the following dependencies:
 
 - [Rust](https://www.rust-lang.org/tools/install)
@@ -89,12 +93,12 @@ Once these dependencies are in place, you may clone the repository on your machi
 $ git clone https://github.com/eclipse-zenoh/zenoh-plugin-dds.git
 $ cd zenoh-plugin-dds
 ```
-> :warning: **WARNING** :warning: : On Linux, don't use `cargo build` command without specifying a package with `-p`. Building both `zplugin-dds` (plugin library) and `zenoh-bridge-dds` (standalone executable) together will lead to a `multiple definition of `load_plugin'` error at link time. See [#117](https://github.com/eclipse-zenoh/zenoh-plugin-dds/issues/117#issuecomment-1439694331) for explanations.
+> :warning: **WARNING** :warning: : On Linux, don't use `cargo build` command without specifying a package with `-p`. Building both `zenoh-plugin-dds` (plugin library) and `zenoh-bridge-dds` (standalone executable) together will lead to a `multiple definition of `load_plugin'` error at link time. See [#117](https://github.com/eclipse-zenoh/zenoh-plugin-dds/issues/117#issuecomment-1439694331) for explanations.
 
 You can then choose between building the zenoh bridge for DDS:
 - as a plugin library that can be dynamically loaded by the zenoh router (`zenohd`):
 ```bash
-$ cargo build --release -p zplugin-dds
+$ cargo build --release -p zenoh-plugin-dds
 ```
 The plugin shared library (`*.so` on Linux, `*.dylib` on Mac OS, `*.dll` on Windows) will be generated in the `target/release` subdirectory.
 
@@ -221,7 +225,7 @@ See in details how to achieve that in [this blog](https://zenoh.io/blog/2021-04-
 
 `zenoh-bridge-dds` can be configured via a JSON5 file passed via the `-c`argument. You can see a commented example of such configuration file: [`DEFAULT_CONFIG.json5`](DEFAULT_CONFIG.json5).
 
-The `"dds"` part of this same configuration file can also be used in the configuration file for the zenoh router (within its `"plugins"` part). The router will automatically try to load the plugin library (`zplugin_dds`) at startup and apply its configuration.
+The `"dds"` part of this same configuration file can also be used in the configuration file for the zenoh router (within its `"plugins"` part). The router will automatically try to load the plugin library (`zenoh-plugin_dds`) at startup and apply its configuration.
 
 `zenoh-bridge-dds` also accepts the following arguments. If set, each argument will override the similar setting from the configuration file:
  * zenoh-related arguments:
@@ -243,6 +247,7 @@ The `"dds"` part of this same configuration file can also be used in the configu
    - **`-a, --allow <String>`** :  A regular expression matching the set of 'partition/topic-name' that must be routed via zenoh.
      By default, all partitions and topics are allowed.  
      If both 'allow' and 'deny' are set a partition and/or topic will be allowed if it matches only the 'allow' expression.  
+     Repeat this option to configure several topic expressions. These expressions are concatenated with '|'.
      Examples of expressions: 
         - `.*/TopicA` will allow only the `TopicA` to be routed, whatever the partition.
         - `PartitionX/.*` will allow all the topics to be routed, but only on `PartitionX`.
@@ -250,6 +255,7 @@ The `"dds"` part of this same configuration file can also be used in the configu
    - **`--deny <String>`** :  A regular expression matching the set of 'partition/topic-name' that must NOT be routed via zenoh.
      By default, no partitions and no topics are denied.  
      If both 'allow' and 'deny' are set a partition and/or topic will be allowed if it matches only the 'allow' expression.  
+     Repeat this option to configure several topic expressions. These expressions are concatenated with '|'.
    - **`--max-frequency <String>...`** : specifies a maximum frequency of data routing over zenoh per-topic. The string must have the format `"regex=float"` where:
        - `"regex"` is a regular expression matching the set of 'partition/topic-name' for which the data (per DDS instance) must be routedat no higher rate than associated max frequency (same syntax than --allow option).
        - `"float"` is the maximum frequency in Hertz; if publication rate is higher, downsampling will occur when routing.
@@ -282,15 +288,15 @@ The `zenoh-bridge-dds` exposes this administration space with paths prefixed by 
 Example of queries on administration space using the REST API with the `curl` command line tool (don't forget to activate the REST API with `--rest-http-port 8000` argument):
  - List all the DDS entities that have been discovered:
     ```bash
-    curl http://localhost:8000:/@/service/**/participant/**
+    curl http://localhost:8000/@/service/**/participant/**
     ```
  - List all established routes:
     ```bash
-    curl http://localhost:8000:/@/service/**/route/**
+    curl http://localhost:8000/@/service/**/route/**
     ```
  - List all discovered DDS entities and established route for topic `cmd_vel`:
     ```bash
-    curl http://localhost:8000:/@/service/**/cmd_vel
+    curl http://localhost:8000/@/service/**/cmd_vel
     ```
 
 > _Pro tip: pipe the result into [**jq**](https://stedolan.github.io/jq/) command for JSON pretty print or transformation._

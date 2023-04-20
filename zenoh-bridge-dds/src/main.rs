@@ -19,7 +19,7 @@ use zenoh::config::{Config, ModeDependentValue};
 use zenoh::prelude::*;
 
 lazy_static::lazy_static!(
-    pub static ref DEFAULT_DOMAIN_STR: String = zplugin_dds::config::DEFAULT_DOMAIN.to_string();
+    pub static ref DEFAULT_DOMAIN_STR: String = zenoh_plugin_dds::config::DEFAULT_DOMAIN.to_string();
 );
 
 macro_rules! insert_json5 {
@@ -42,8 +42,8 @@ macro_rules! insert_json5 {
 
 fn parse_args() -> (Config, Option<f32>) {
     let app = App::new("zenoh bridge for DDS")
-        .version(zplugin_dds::GIT_VERSION)
-        .long_version(zplugin_dds::LONG_VERSION.as_str())
+        .version(zenoh_plugin_dds::GIT_VERSION)
+        .long_version(zenoh_plugin_dds::LONG_VERSION.as_str())
         //
         // zenoh related arguments:
         //
@@ -103,13 +103,15 @@ This option is not active by default, unless the "ROS_LOCALHOST_ONLY" environeme
 r#"--group-member-id=[ID]   'A custom identifier for the bridge, that will be used in group management (if not specified, the zenoh UUID is used).'"#
         ))
         .arg(Arg::from_usage(
-r#"-a, --allow=[String]   'A regular expression matching the set of 'partition/topic-name' that must be routed via zenoh. By default, all partitions and topics are allowed.
+r#"-a, --allow=[String]...   'A regular expression matching the set of 'partition/topic-name' that must be routed via zenoh. By default, all partitions and topics are allowed.
 If both '--allow' and '--deny' are set a partition and/or topic will be allowed if it matches only the 'allow' expression.
+Repeat this option to configure several topic expressions. Thesse expressions are concatenated with '|'.
 Examples of expressions: '.*/TopicA', 'Partition-?/.*', 'cmd_vel|rosout'...'"#
         ))
         .arg(Arg::from_usage(
-r#"--deny=[String]   'A regular expression matching the set of 'partition/topic-name' that must not be routed via zenoh. By default, no partitions and no topics are denied.
+r#"--deny=[String]...   'A regular expression matching the set of 'partition/topic-name' that must not be routed via zenoh. By default, no partitions and no topics are denied.
 If both '--allow' and '--deny' are set a partition and/or topic will be allowed if it matches only the 'allow' expression.
+Repeat this option to configure several topic expressions. These expressions are concatenated with '|'.
 Examples of expressions: '.*/TopicA', 'Partition-?/.*', 'cmd_vel|rosout'...'"#
         ))
         .arg(Arg::from_usage(
@@ -196,8 +198,8 @@ in the `duration` interval (in milliseconds), a QosEvent() is published on `qos_
     insert_json5!(config, args, "plugins/dds/domain", if "domain", .parse::<u64>().unwrap());
     insert_json5!(config, args, "plugins/dds/localhost_only", if "dds-localhost-only");
     insert_json5!(config, args, "plugins/dds/group_member_id", if "group-member-id", );
-    insert_json5!(config, args, "plugins/dds/allow", if "allow", );
-    insert_json5!(config, args, "plugins/dds/deny", if "deny", );
+    insert_json5!(config, args, "plugins/dds/allow", for "allow", .collect::<Vec<_>>());
+    insert_json5!(config, args, "plugins/dds/deny", for "deny", .collect::<Vec::<_>>());
     insert_json5!(config, args, "plugins/dds/max_frequencies", for "max-frequency", .collect::<Vec<_>>());
     insert_json5!(config, args, "plugins/dds/generalise_pubs", for "generalise-pub", .collect::<Vec<_>>());
     insert_json5!(config, args, "plugins/dds/generalise_subs", for "generalise-sub", .collect::<Vec<_>>());
@@ -222,7 +224,7 @@ in the `duration` interval (in milliseconds), a QosEvent() is published on `qos_
 #[async_std::main]
 async fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("z=info")).init();
-    log::info!("zenoh-bridge-dds {}", *zplugin_dds::LONG_VERSION);
+    log::info!("zenoh-bridge-dds {}", *zenoh_plugin_dds::LONG_VERSION);
 
     let (config, watchdog_period) = parse_args();
     let rest_plugin = config.plugin("rest").is_some();
@@ -237,13 +239,13 @@ async fn main() {
     // start REST plugin
     if rest_plugin {
         use zenoh_plugin_trait::Plugin;
-        zplugin_rest::RestPlugin::start("rest", &runtime).unwrap();
+        zenoh_plugin_rest::RestPlugin::start("rest", &runtime).unwrap();
     }
 
     // start DDS plugin
     use zenoh_plugin_trait::Plugin;
-    zplugin_dds::DDSPlugin::start("dds", &runtime).unwrap();
-    async_std::task::block_on(async_std::future::pending::<()>());
+    zenoh_plugin_dds::DDSPlugin::start("dds", &runtime).unwrap();
+    async_std::future::pending::<()>().await;
 }
 
 fn run_watchdog(period: f32) {
